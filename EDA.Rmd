@@ -1,0 +1,133 @@
+---
+title: "P8106 Midterm"
+author: "Linh Tran"
+date: "3/27/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(mlbench)  
+library(pROC)   
+library(pdp) 
+library(vip) 
+library(AppliedPredictiveModeling)
+library(e1071)
+library(MASS) 
+library(klaR)
+library(lares)
+library(naniar) #handling missing data
+library(imbalance) #dealing with imbalanced datasets
+library(gridExtra) #display plots in grids
+library(patchwork)
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+	message = FALSE,
+	fig.width = 8, 
+  fig.height = 6,
+  out.width = "90%"
+)
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+```
+
+Load the data
+
+```{r}
+stroke_df = read.csv("./data/healthcare-dataset-stroke-data.csv")
+
+stroke_df$stroke = as.factor(stroke_df$stroke)
+stroke_df$gender = as.factor(stroke_df$gender)
+stroke_df$ever_married = as.factor(stroke_df$ever_married)
+stroke_df$work_type = as.factor(stroke_df$work_type)
+stroke_df$Residence_type = as.factor(stroke_df$Residence_type)
+stroke_df$smoking_status = as.factor(stroke_df$smoking_status)
+stroke_df$heart_disease = as.factor(stroke_df$heart_disease)
+stroke_df$hypertension = as.factor(stroke_df$hypertension)
+stroke_df$work_type = as.factor(stroke_df$work_type)
+stroke_df$bmi = as.numeric(stroke_df$bmi)
+stroke_df = stroke_df %>% 
+    mutate(stroke = recode(stroke, 
+                           `0` = "no stroke", 
+                           `1` = "stroke")) %>% 
+    dplyr::select(-id) %>% 
+    filter(gender != "Other")
+summary(stroke_df)
+```
+
+Missing values
+
+```{r}
+stroke_data = read.csv("./data/healthcare-dataset-stroke-data.csv")
+miss_scan_count(data = stroke_data, search = list("N/A", "Unknown"))
+
+```
+
+There are 201 missing values in BMI and 1544 "Unknown" values in smoking_status. We can put this into perspective by using plot:
+
+```{r}
+stroke_df %>% 
+  group_by(smoking_status) %>% 
+  summarise(count = length(smoking_status)) %>% 
+  ggplot(aes(x = fct_reorder(smoking_status, count), y = count)) + geom_col() +
+  geom_text(aes(label = count, x = smoking_status, y = count))
+```
+
+
+
+```{r}
+ggplot(stroke_df, aes(x = bmi)) +
+geom_histogram() +
+labs(title = "Distribution of BMI") 
+```
+
+The distribution is right-skewed. Because this is the only variable with missing data (at least the numerical variables) we can impute the median on the missing data.
+
+```{r}
+
+stroke_data_clean <- replace_with_na(data = stroke_data, replace = list(bmi = c("N/A"), 
+                                                                        smoking_status = c("Unknown"))) %>%
+    mutate(bmi = as.numeric(bmi))
+
+# impute median and bind shadow to evaluate imputation
+stroke_data_imp <- bind_shadow(stroke_data_clean) %>% 
+impute_median_at(.vars = c("bmi")) %>%
+add_label_shadow()
+
+# Explore the median values in bmi in the imputed dataset
+ggplot(stroke_data_imp, 
+       aes(x = bmi_NA, y = bmi)) + 
+geom_boxplot() +
+labs(title = "Comparison, no-missing vs. imputed values for BMI") 
+
+
+```
+
+
+Next we can look at the proportion of people who have a stroke
+
+```{r}
+stroke_df_imp %>%
+  dplyr::select(stroke) %>%
+  ggplot(aes(x = stroke)) +
+  geom_bar() 
+
+
+# Count how many people who have a stroke
+stroke_df_imp %>% 
+  group_by(stroke) %>% 
+  summarize (n = n()) %>% 
+  mutate(prop = round(n/sum(n), 2)) %>% 
+  knitr::kable()
+```
+
+We see that only 5% of all the people in the dataset had a stroke at some point. This means that our baseline dummy model has an accuracy of 95%. 

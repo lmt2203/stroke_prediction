@@ -1,0 +1,463 @@
+---
+title: "Report draft"
+author: "Linh Tran"
+date: "3/29/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+set.seed(2021)
+# load libraries
+library(tidyverse) # metapackage of all tidyverse packages
+library(naniar) # handling missing data
+library(skimr) # quick overview over the dataset
+library(caret) # ML toolkit
+library(MLmetrics) # F1 Score
+library(imbalance) # algorithms to deal with imbalanced datasets
+library(gridExtra) # display plots in grids
+library(patchwork) # arrange plots side by side
+library(glmnet)
+library(mlbench)  
+library(pROC)   
+library(pdp) 
+library(vip) 
+library(AppliedPredictiveModeling)
+library(e1071)
+library(MASS) 
+library(klaR)
+library(lares)
+library(randomForest)
+
+set.seed(88)
+
+# custom plot size function
+fig <- function(width, heigth){
+     options(repr.plot.width = width, repr.plot.height = heigth)
+}
+
+## ggplot custom theme
+theme_bigfont <- theme(plot.title = element_text(size=22),
+                       axis.text.x= element_text(size=15),
+                       axis.text.y= element_text(size=15), 
+                       axis.title=element_text(size=18),
+                       legend.text = element_text(size = 14))
+
+# read data into R
+stroke_data <- read_csv("data/healthcare-dataset-stroke-data.csv")
+
+```
+
+
+
+```{r}
+# check the first few rows
+head(stroke_data)
+
+# summary of the data
+summary(stroke_data)
+```
+
+```{r}
+# how many "N/A" values are in my dataset per column?
+miss_scan_count(data = stroke_data, search = list("N/A", "Unknown"))
+```
+
+```{r}
+fig(15, 8)
+
+stroke_data %>%
+group_by(smoking_status) %>%
+summarise(count = length(smoking_status)) %>%
+mutate(smoking_status = factor(smoking_status)) %>%
+ggplot(aes(x = fct_reorder(smoking_status, count), y = count, fill = factor(ifelse(smoking_status=="Unknown","Unknown","Known")))) +
+geom_col() +
+geom_text(aes(label = count, x = smoking_status, y = count), size = 6, hjust = 1.5) +
+coord_flip() +
+scale_fill_manual(values = c("Unknown" = "red", "Known" = "darkgrey")) +
+labs(x = "smoking status") +
+theme(legend.position = "none") +
+theme_bigfont
+```
+
+
+```{r}
+stroke_data_clean <- replace_with_na(data = stroke_data, replace = list(bmi = c("N/A"), smoking_status = c("Unknown"))) %>%
+    # change bmi to numeric 
+    mutate(bmi = as.numeric(bmi))
+
+# check
+summary(stroke_data_clean)
+unique(stroke_data_clean$smoking_status)
+```
+
+
+```{r}
+fig(15, 8)
+
+# visualize the missing values
+vis_miss(stroke_data_clean, cluster = TRUE) +
+theme_bigfont
+```
+
+
+```{r}
+fig(20, 30)
+
+# create vector of column names with
+cols <- stroke_data_clean %>% 
+  dplyr::select(-id, -smoking_status) %>% 
+  names()
+
+vis_plots_list <- list()
+
+for (i in 1:length(cols)) {
+    vis_plots_list[[i]] <- stroke_data_clean %>% arrange_at(cols[i]) %>% vis_miss() + labs(title = paste0("Ordered by ", cols[i]))
+}
+
+n <- length(vis_plots_list)
+nCol <- floor(sqrt(n))
+do.call("grid.arrange", c(vis_plots_list, ncol = nCol))
+
+```
+
+
+
+```{r}
+fig(10, 8)
+
+# check distribution of bmi
+ggplot(stroke_data_clean, aes(x = bmi)) +
+geom_histogram() +
+labs(title = "Distribution of BMI") +
+theme_bigfont
+```
+
+
+
+```{r}
+fig(10,8)
+
+# impute median and bind shadow to evaluate imputation
+stroke_data_imp <- bind_shadow(stroke_data_clean) %>% 
+impute_median_at(.vars = c("bmi")) %>%
+add_label_shadow()
+
+# Explore the median values in bmi in the imputed dataset
+ggplot(stroke_data_imp, 
+       aes(x = bmi_NA, y = bmi)) + 
+geom_boxplot() +
+labs(title = "Comparison, no-missing vs. imputed values for BMI") +
+theme_bigfont
+```
+
+
+```{r}
+stroke_data_imp <- impute_median_at(stroke_data_clean, .vars = c("bmi"))
+```
+
+
+```{r}
+fig(16,8)
+
+p1 <- ggplot(stroke_data_imp, 
+       aes(x = smoking_status, fill = smoking_status)) + 
+geom_bar() +
+labs(title = "Before filling in NA values in smoking_status") +
+theme(legend.position = "none") +
+theme_bigfont
+
+# fill imputation based on previous unique value in "smoking_status" column
+after <- stroke_data_imp %>% 
+fill(smoking_status)
+# mode imputation which leads to worse performance of models:
+#mutate(across(c(smoking_status)), replace(., is.na(.), "never smoked"))
+
+# Explore the median values in bmi in the imputed dataset
+p2 <- ggplot(after, 
+       aes(x = smoking_status, fill = smoking_status)) + 
+geom_bar() +
+labs(title = "After filling in NA values in smoking_status") +
+theme(legend.position = "none") +
+theme_bigfont
+
+p1 + p2
+```
+
+
+```{r}
+stroke_data_imp2 <- stroke_data_imp %>%
+  fill(smoking_status) %>%
+  mutate(across(c(hypertension, heart_disease), factor),
+      across(where(is.character), as.factor),
+      across(where(is.factor), as.numeric),
+      stroke = factor(ifelse(stroke == 0, "no", "yes")))
+```
+
+
+
+```{r}
+stroke_data_imp2 <- stroke_data_imp2 %>%
+mutate(bmi = case_when(bmi < 18.5 ~ "underweight",
+                      bmi >= 18.5 & bmi < 25 ~ "normal weight",
+                      bmi >= 25 & bmi < 30 ~ "overweight",
+                      bmi >= 30 ~ "obese"),
+      bmi = factor(bmi, levels = c("underweight", "normal weight", "overweight", "obese"), order = TRUE))
+```
+
+
+```{r}
+fig(10, 8)
+
+# plot prop of people who had a stroke
+stroke_data_imp2 %>%
+dplyr::select(stroke) %>%
+ggplot(aes(x = stroke)) +
+geom_bar() +
+theme_bigfont
+
+# count how many people had a stroke and the prop
+stroke_data_imp2 %>%
+group_by(stroke) %>%
+summarize(n = n()) %>%
+mutate(prop = round(n / sum(n), 2))
+```
+
+
+Because we have imbalanced data, I decided to use oversampling method to increase the number of 'stroke' instances to balance the distribution of classes. 
+
+```{r}
+
+imbalanceRatio(as.data.frame(stroke_data_imp2), classAttr = "stroke")
+```
+
+
+
+```{r}
+stroke_test <- stroke_data_imp2 %>%
+mutate(
+    stroke = as.character(stroke),
+    across(where(is.factor), as.numeric),
+    stroke = factor(stroke)
+)
+
+stroke_oversampled <- oversample(as.data.frame(stroke_test), classAttr = "stroke", ratio = 1, method = "MWMOTE")
+
+head(stroke_oversampled)
+
+stroke_oversampled %>%
+  group_by(stroke) %>%
+  summarize(n = n()) %>%
+  mutate(prop = round(n / sum(n), 2))
+```
+
+
+
+```{r}
+stroke_oversampled <- 
+  stroke_oversampled %>% 
+  dplyr::select(-id)
+
+
+```
+
+
+Train/Test split for oversampled data
+
+
+```{r}
+set.seed(2021)
+
+trRow = createDataPartition(y = stroke_oversampled$stroke, p = 0.7, list = F)
+train_oversamp = stroke_oversampled[trRow, ]
+test_oversamp = stroke_oversampled[-trRow, ] 
+```
+
+Train/Test split for original data
+
+```{r}
+set.seed(2021)
+
+trRow = createDataPartition(y = stroke_test$stroke, p = 0.7, list = F)
+train_original = stroke_test[trRow, ]
+test_original = stroke_test[-trRow, ] 
+
+test_original_no_stroke = test_original %>% 
+  dplyr::select(-id, - stroke)
+
+```
+
+
+# Model building
+
+## GLMnet
+
+```{r}
+# custom train control
+myControl <- trainControl(
+  method = "cv", 
+  number = 10,
+  summaryFunction = twoClassSummary,
+  classProbs = TRUE,
+  verboseIter = TRUE
+)
+
+myGrid <- expand.grid(
+    alpha = c(0,1),
+    lambda = seq(0.00001, 1, length = 20)
+)
+
+set.seed(42)
+glmnet_model <- train(
+    stroke ~ .,
+    train_oversamp,
+    method = "glmnet",
+    tuneGrid = myGrid,
+    trControl = myControl
+)
+
+plot(glmnet_model)
+
+max(glmnet_model[["results"]]$ROC)
+
+mm_test <- test_oversamp %>% 
+  dplyr::select(-stroke)
+
+glmnet_pred <- predict(glmnet_model, newdata = mm_test) 
+
+confusionMatrix(glmnet_pred, factor(test_oversamp[["stroke"]]), positive = "yes")
+
+```
+
+
+
+The best model using GLMnet is a ridge regression classifier. However, it has lower accuracy than the baseline model (0.78 vs 0.95), however it's recall (sensitivity) is of course larger than baseline (0.74) meaning it has at least some predictive power to classify true positives correctly.
+
+Now redo for original data (before oversampling)
+```{r}
+glmnet_pred_original <- predict(glmnet_model, newdata = test_original_no_stroke) 
+
+confusionMatrix(glmnet_pred_original, factor(test_original[["stroke"]]), positive = "yes")
+```
+
+
+Using original data (no oversampling)
+
+```{r}
+# custom train control
+myControl <- trainControl(
+  method = "cv", 
+  number = 10,
+  summaryFunction = twoClassSummary,
+  classProbs = TRUE,
+  verboseIter = TRUE
+)
+
+myGrid <- expand.grid(
+    alpha = c(0,1),
+    lambda = seq(0.00001, 1, length = 20)
+)
+
+set.seed(2021)
+glmnet_model <- train(
+    stroke ~ .,
+    train_original,
+    method = "glmnet",
+    tuneGrid = myGrid,
+    trControl = myControl
+)
+
+plot(glmnet_model)
+
+max(glmnet_model[["results"]]$ROC)
+
+mm_test <- test_original %>% 
+  dplyr::select(-stroke)
+
+glmnet_pred <- predict(glmnet_model, newdata = mm_test) 
+
+confusionMatrix(glmnet_pred, factor(test_original[["stroke"]]), positive = "yes")
+```
+
+
+The values for accuracy improve a little for the oversampled data (0.7898 vs 0.7448). The sensitivity also improved for the oversampled data (0.8320 vs 0.68919).
+
+
+
+## Random Forest
+
+Original data
+
+```{r}
+rfGrid <- data.frame(
+  .mtry = c(2,3,5,6),
+  .splitrule = "gini",
+  .min.node.size = 5
+)
+
+rfControl <- trainControl(
+    method = "oob",
+    number = 5,
+    verboseIter = TRUE
+)
+
+rf_model_original <- train(
+    stroke ~ .,
+    train_original,
+    method = "ranger",
+    tuneLength = 3,
+    tuneGrid = rfGrid,
+    trControl = rfControl
+)
+
+rf_model_original
+
+mm_test_original = test_original %>% 
+  dplyr::select(-stroke)
+
+rf_pred_original <- predict(rf_model_original, newdata = mm_test_original) 
+
+confusionMatrix(rf_pred_original, factor(test_original[["stroke"]]), positive = "yes")
+
+
+```
+
+
+Oversampled data
+
+```{r}
+rfGrid <- data.frame(
+  .mtry = c(2,3,5,6),
+  .splitrule = "gini",
+  .min.node.size = 5
+)
+
+rfControl <- trainControl(
+    method = "oob",
+    number = 5,
+    verboseIter = TRUE
+)
+
+rf_model_oversamp <- train(
+    stroke ~ .,
+    train_oversamp,
+    method = "ranger",
+    tuneLength = 3,
+    tuneGrid = rfGrid,
+    trControl = rfControl
+)
+
+rf_model_oversamp
+
+mm_test_oversamp = test_oversamp %>% 
+  dplyr::select(-stroke)
+
+rf_pred_oversamp <- predict(rf_model_oversamp, newdata = mm_test_oversamp) 
+
+confusionMatrix(rf_pred_oversamp, factor(test_oversamp[["stroke"]]), positive = "yes")
+```
+
+
+Looks like the random forest model is great at classifying true negative cases, but performs poorly on classifying true positive cases which is what we are interested in (we want to detect people with stroke, so we can be confident in telling a patient they are at risk of stroke when we supply his/her information to the model).
+
+
+

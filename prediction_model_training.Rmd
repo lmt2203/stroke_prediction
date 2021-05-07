@@ -1,0 +1,460 @@
+---
+title: "Final Report"
+author: "Linh Tran"
+date: "3/25/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+set.seed(2021)
+
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(mlbench)  
+library(pROC)   
+library(pdp) 
+library(vip) 
+library(AppliedPredictiveModeling)
+library(e1071)
+library(MASS) 
+library(klaR)
+library(lares)
+library(naniar) #handling missing data
+library(imbalance) #dealing with imbalanced datasets
+library(gridExtra) #display plots in grids
+library(patchwork)
+library(randomForest)
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+	message = FALSE,
+	fig.width = 8, 
+  fig.height = 6,
+  out.width = "90%"
+)
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+```
+
+
+# Introduction
+
+
+
+### Significance and Background
+According to the World Health Organization (WHO) stroke is the 2nd leading cause of death globally, responsible for approximately 11% of total deaths. This dataset is used to predict whether a patient is likely to get stroke based on the input parameters like gender, age, various diseases, and smoking status. Each row in the data provides relavant information about the patient.
+
+Data Source: https://www.kaggle.com/fedesoriano/stroke-prediction-dataset.\
+
+All the features we had:
+
+- id: unique identifier
+- gender: "Male", "Female" or "Other"
+- age: age of the patient
+- hypertension: 0 if the patient doesn't have hypertension, 1 if the patient has hypertension
+- heart_disease: 0 if the patient doesn't have any heart diseases, 1 if the patient has a heart disease
+- ever_married: "No" or "Yes"
+- work_type: "children", "Govt_jov", "Never_worked", "Private" or "Self-employed"
+- Residence_type: "Rural" or "Urban"
+- avg_glucose_level: average glucose level in blood
+- bmi: body mass index
+- smoking_status: "formerly smoked", "never smoked", "smokes" or "Unknown"*
+- stroke: 1 if the patient had a stroke or 0 if not
+*Note: "Unknown" in smoking_status means that the information is unavailable for this patient
+
+
+### Data cleaning
+
+Load the data
+
+```{r}
+stroke_df <- read_csv("data/healthcare-dataset-stroke-data.csv") %>% 
+  janitor::clean_names()
+miss_scan_count(data = stroke_df, search = list("N/A", "Unknown"))
+
+dim(stroke_df) #12 variables and 5110 observations
+```
+
+
+```{r}
+stroke_df$stroke = as.factor(stroke_df$stroke)
+stroke_df$gender = as.factor(stroke_df$gender)
+stroke_df$ever_married = as.factor(stroke_df$ever_married)
+stroke_df$work_type = as.factor(stroke_df$work_type)
+stroke_df$residence_type = as.factor(stroke_df$residence_type)
+stroke_df$smoking_status = as.factor(stroke_df$smoking_status)
+stroke_df$heart_disease = as.factor(stroke_df$heart_disease)
+stroke_df$hypertension = as.factor(stroke_df$hypertension)
+stroke_df$work_type = as.factor(stroke_df$work_type)
+stroke_df$bmi = as.numeric(stroke_df$bmi)
+stroke_df = stroke_df %>% 
+    mutate(stroke = recode(stroke, 
+                           `0` = "no stroke", 
+                           `1` = "stroke")) %>% 
+    dplyr::select(-id) %>% 
+    filter(gender != "Other")
+summary(stroke_df)
+
+stroke_df = 
+  stroke_df %>% 
+  mutate(hypertension = recode(hypertension,`0` = "no", `1` = "yes"),
+         heart_disease = recode(heart_disease,`0` = "no", `1` = "yes"),
+         ever_married = recode(ever_married,`Yes` = "yes", `No` = "no")
+         ) %>% 
+  mutate(work_type = recode(work_type, 
+                            `children` = "children", 
+                            `Govt_job` = "govt_job",
+                            `Never_worked` = "never_worked",
+                            `Private` = "private",
+                            `Self-employed` = "self_employed"))  
+
+
+stroke_df_clean <- replace_with_na(data = stroke_df, replace = list(bmi = c("N/A"), smoking_status = c("Unknown"))) 
+```
+
+The dataset is essentially clean. I just convert the categorical variables from character to factor class in order for them to be included in the model and for the purpose of analysis. I also omit the "Other" category from the `gender` variable, leaving "male" and "female" as the two categories. 
+
+The imported dataset has 5110 observations in total. Excluding the id, we only gave ten features and one binary outcome variable-stroke (0:no stroke, 1:stroke). We found that the stroke outcome distribution is imbalanced with 4861 observations have no stroke while 249 observations have a stroke.
+
+There are 201 missing values in BMI. Among these missing values, 40 observations have a stroke while 161 observations without stroke. We will then apply preprocess imputation in the caret train function to address the imputation problem.
+
+My main aim is to find out the appropriate models that have a better performance on prediction by comparing several models' performance. 
+
+
+Next, the characteristics of features will help us determine which model would have better prediction accuracy. As the outcome is binary, and the features are mixtures of continuous and categorical variables. We also have to decide how to partition the train and test data, which cross-validation method to use. Evaluation metrics should be used and set up a reasonable tuning grid corresponding to the tuning parameter.
+
+### Questions of interest
+* Comparing several models' performance. What model has the best prediction accuracy?
+* What variables are significant and included in the model?
+
+
+
+
+# Exploratory analysis/ Visualization
+
+* Is there any interesting structure present in the data?
+* What were your findings?
+
+Missing values
+
+```{r}
+miss_scan_count(data = stroke_df, search = list("NA", "Unknown"))
+```
+
+There are a lot of "Unknown" values in smoking_status. We can put this into perspective by using plot:
+
+```{r}
+stroke_df %>% 
+  group_by(smoking_status) %>% 
+  summarise(count = length(smoking_status)) %>% 
+  ggplot(aes(x = fct_reorder(smoking_status, count), y = count)) + geom_col() +
+  geom_text(aes(label = count, x = smoking_status, y = count))
+```
+
+There are also 200 missing values in BMI. We can check the distribution of BMI:
+
+```{r}
+ggplot(stroke_df, aes(x = bmi)) +
+geom_histogram() +
+labs(title = "Distribution of BMI") 
+```
+
+The distribution is right-skewed. Because this is the only variable with missing data (at least the numerical variables) we can impute the `BMI` values with the mean or median.
+
+
+
+Split data into training and test data
+
+```{r, eval = F}
+set.seed(123)
+
+#partition
+trRow = createDataPartition(y = stroke_df$stroke, p = 0.7, list = F)
+train_data = stroke_df[trRow, ]
+test_data = stroke_df[-trRow, ] 
+
+# Imputation by KNN
+knnImp = preProcess(train_data, method = "knnImpute", k = 3)
+
+# apply to training data
+train_knn <- predict(knnImp, train_data)
+
+# apply to test data
+test_knn <- predict(knnImp, test_data)
+
+train_data = predict(knnImp, train_data)
+vis_miss(train_data)
+test_data = predict(knnImp,test_data)
+vis_miss(test_data)
+
+fit.lm <- train(x = train_data,
+                y = train_data$stroke,
+                preProcess =c("knnImpute"),# bagImpute/medianImpute
+                method = "lm",
+                trControl =trainControl(method = "none",
+                                        preProcOptions =list(k = 5)))
+
+pred.lm <-predict(fit.lm, newdata = test_data)
+
+mean((testData$Y-pred.lm)^2)
+
+```
+
+
+Next we can look at the proportion of people who have a stroke
+
+```{r}
+stroke_df %>%
+  dplyr::select(stroke) %>%
+  ggplot(aes(x = stroke)) +
+  geom_bar() 
+
+
+# Count how many people who have a stroke
+stroke_df %>% 
+  group_by(stroke) %>% 
+  summarize (n = n()) %>% 
+  mutate(prop = round(n/sum(n), 2)) %>% 
+  knitr::kable()
+```
+
+We see that only 5% of all the people in the dataset had a stroke at some point. This means that our baseline dummy model has an accuracy of 95%. 
+
+#### Visualization
+
+By gender:
+
+```{r}
+stroke_df %>% 
+  filter(stroke == "stroke") %>% 
+  ggplot(aes(x = gender, fill = gender)) +
+  geom_bar()
+```
+
+Distribution by age
+
+```{r}
+stroke_df %>% 
+  filter(stroke == "stroke") %>% 
+  ggplot(aes(x = age)) +
+  geom_histogram(bins = 10, fill = "pink", color = "white") +
+  ggtitle(label = "Age distribution of people who had a stroke")
+```
+
+The older someone is the higher the chance of getting a stroke.
+
+
+
+# Model
+* What predictor variables did you include?
+* What technique did you use? What assumptions, if any, are being made by using this technique?
+* If there were tuning parameters, how did you pick their values?
+* Discuss the training/test performance if you have a test data set.
+* Which variables play important roles in predicting the response?
+* What are the limitations of the models you used (if there are any)? Are the models flexible enough to capture the underlying truth?
+
+
+
+The data is divided into two parts (70% data as training and 30 % as test data). 
+```{r}
+set.seed(2021)
+
+rowTrain <- createDataPartition(y = stroke_df$stroke,
+                                p = 0.75,
+                                list = FALSE)
+
+train_data = stroke_df[rowTrain, ]
+test_data = stroke_df[-rowTrain, ]
+```
+
+
+Imputation 
+
+```{r}
+
+stroke_df_imp = impute_median_at(stroke_df_clean, .vars = c("bmi"))
+
+```
+
+Convert `BMI` from a continuous variable to a factor 
+
+```{r}
+stroke_df_imp2 = stroke_df_imp %>% 
+  mutate(bmi = case_when(
+    bmi< 18.5 ~ "underweight",
+    bmi >= 18.5 & bmi < 25 ~ "normal weight",
+    bmi >= 25 & bmi < 30 ~ "overweight",
+    bmi >= 30 ~ "obese"),
+    bmi = factor(bmi, levels = c("underweight", "normal weight", "overweight", "obese", order = T))
+  ) %>% 
+  mutate(stroke = recode(stroke, "stroke" = "yes", "no stroke" = "no"),
+         stroke = factor(stroke), levels = )
+```
+
+```{r}
+set.seed(2021)
+
+rowTrain <- createDataPartition(y = stroke_df_imp$stroke,
+                                p = 0.75,
+                                list = FALSE)
+
+train_data_imp = stroke_df_imp[rowTrain, ]
+test_data_imp = stroke_df_imp[-rowTrain, ]
+```
+
+
+## Generalized Linear Models (GLM)
+
+Fit a logistic regression model in order to predict Stroke or No Stroke using the given predictors. 
+```{r}
+
+contrasts(stroke_df$stroke) # R has created a dummy variable with a 1 for Stroke.
+
+glm.fit <- glm(stroke ~ ., 
+               data = stroke_df_imp, 
+               subset = rowTrain, 
+               family = binomial(link = "logit"))
+
+               
+summary(glm.fit)
+
+
+```
+
+The smallest p-value here is associated with age. The positive coefficient suggests that the older one gets, the more likely that person will have a stroke. \
+For every unit change in age, the log odds of having stroke (versus not having a stroke) increase by 0.070689.
+For every unit change in average glucose level, the log odds of having stroke (versus not having a stroke) increase by 0.006253.
+`
+
+We first consider the simple classifier with a cut-off of 0.5 and evaluate its performance on the test data.
+
+We can use `predict` function to predict the probability that a person has a stroke, given values of the predictors. 
+```{r}
+# Convert predicted probabilities into class labels, stroke or no stroke.
+
+glm.probs <- predict(glm.fit, newdata = test_data_imp,
+                           type = "response")
+glm.pred = rep("no stroke", length(glm.probs))
+glm.pred[glm.probs>0.5] = "stroke"
+table(glm.pred, test_data_imp$stroke)
+
+# 2x2 table
+confusionMatrix(data = as.factor(glm.pred),
+                reference = stroke_df_imp$stroke[-rowTrain],
+                positive = "stroke")
+
+mean(glm.pred == test_data$stroke) # 95% of cases have been correctly predicted
+```
+
+Our baseline dummy model has an accuracy of 95%. But the proportion of people who had stroke is 5%, so this mean that we would predict a person to not have a stroke all the time. Our model has a sensitivity of 0, because no true positives are found.  
+
+
+We then plot the test ROC curve. You may also consider a smoothed ROC curve.
+
+```{r}
+roc.glm <- roc(stroke_df$stroke[-rowTrain], test.pred.prob)
+plot(roc.glm, legacy.axes = TRUE, print.auc = TRUE)
+plot(smooth(roc.glm), col = 4, add = TRUE)
+```
+
+**Interpretation**
+* There are 1215 true "no stroke" and 62 true "stroke".
+* Accuracy is 0.9514 = proportion of the correct prediction which is fairly high.
+* No Information Rate = 0.9514 = maximum of (proportion of observed negative, proportion of observed positive).
+* P-value = 0.5337 > 0.05 so we fail to reject the null hypothesis that accuracy is equal to no information rate.
+If Accuracy = NIR then this classifier not that meaningful.
+
+
+## GLMnet
+
+```{r}
+
+myControl <- trainControl(
+  method = "cv", 
+  number = 10,
+  summaryFunction = twoClassSummary,
+  classProbs = TRUE,
+  verboseIter = TRUE
+)
+
+myGrid <- expand.grid(
+    alpha = c(0,1),
+    lambda = seq(0.00001, 1, length = 20)
+)
+
+set.seed(2021)
+glmnet_model <- train(
+    stroke ~ .,
+    data = train_data_imp,
+    method = "glmnet",
+    tuneGrid = myGrid,
+    trControl = myControl
+)
+
+plot(glmnet_model)
+
+max(glmnet_model[["results"]]$ROC)
+
+# check results of the glmnet model
+glmnet_model[["results"]] %>% arrange(desc(ROC))
+
+glmnet_pred <- predict(glmnet_model, newdata = mm_test) 
+
+confusionMatrix(glmnet_pred, factor(test[["stroke"]]), positive = "yes")
+
+```
+
+## LDA
+
+
+Using caret:
+```{r}
+ctrl <- trainControl(method = "repeatedcv", repeats = 5,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+
+set.seed(2021)
+model.lda <- train(x = stroke_df_imp[rowTrain,1:10],
+                   y = stroke_df_imp$stroke[rowTrain],
+                   method = "lda",
+                   metric = "ROC",
+                   trControl = ctrl)
+
+# fit model on training and predict on test
+lda.fit = lda(stroke ~ .,
+              data = stroke_df_imp,
+              subset = rowTrain)
+lda.pred = predict(lda.fit, 
+                   newdata = row_test)
+# plot ROC curve
+roc.lda = roc(row_test$direction, lda.pred$posterior[,2],
+           levels = c("Down", "Up"))
+plot(roc.lda, legacy.axes = T, print.auc = T)
+plot(smooth(roc.lda),col = 4, add = TRUE)
+```
+
+
+## Random Forest
+
+```{r}
+set.seed(2021)
+train_data = na.omit(train_data)
+rf.fit = randomForest(stroke ~., data = train_data, ntree = 10)
+
+rf.fit
+```
+
+
+## QDA
+
+# Conclusion
+* What were your findings? 
+* Are they what you expect? 
+* What insights into the data can you make?

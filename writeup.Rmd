@@ -1,0 +1,290 @@
+---
+title: "Final Report"
+author: "Linh Tran"
+date: "3/30/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+set.seed(2021)
+# load libraries
+library(tidyverse) # metapackage of all tidyverse packages
+library(naniar) # handling missing data
+library(skimr) # quick overview over the dataset
+library(caret) # ML toolkit
+library(MLmetrics) # F1 Score
+library(imbalance) # algorithms to deal with imbalanced datasets
+library(gridExtra) # display plots in grids
+library(patchwork) # arrange plots side by side
+library(glmnet)
+library(mlbench)  
+library(pROC)   
+library(pdp) 
+library(vip) 
+library(AppliedPredictiveModeling)
+library(e1071)
+library(MASS) 
+library(klaR)
+library(lares)
+library(randomForest)
+
+set.seed(2021)
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+	message = FALSE,
+	fig.width = 8, 
+  fig.height = 6,
+  out.width = "90%"
+)
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+
+# read data into R
+stroke_data <- read_csv("data/healthcare-dataset-stroke-data.csv")
+
+stroke_df = read.csv("./data/healthcare-dataset-stroke-data.csv")
+
+stroke_df$stroke = as.factor(stroke_df$stroke)
+stroke_df$gender = factor(stroke_df$gender) %>% as.numeric()
+stroke_df$ever_married = factor(stroke_df$ever_married) %>% as.numeric()
+stroke_df$work_type = factor(stroke_df$work_type) %>% as.numeric()
+stroke_df$Residence_type = factor(stroke_df$Residence_type) %>% as.numeric()
+stroke_df$smoking_status = factor(stroke_df$smoking_status) %>% as.numeric()
+stroke_df$heart_disease = factor(stroke_df$heart_disease) %>% as.numeric()
+stroke_df$hypertension = as.numeric(factor(stroke_df$hypertension))
+stroke_df$work_type = as.factor(stroke_df$work_type) %>% as.numeric()
+stroke_df$bmi = as.numeric(stroke_df$bmi)
+stroke_df = stroke_df[, -1] %>% 
+    mutate(stroke = recode(stroke, 
+                           `0` = "No", 
+                           `1` = "Yes"), 
+           stroke = factor(stroke)) %>% 
+    filter(gender < 3) 
+```
+
+
+# I - Introduction 
+
+
+## Significance and Background
+
+According to the World Health Organization (WHO) stroke is the 2nd leading cause of death globally, responsible for approximately 11% of total deaths. This dataset used in this report is used to predict whether a patient is likely to get stroke based on the input parameters like gender, age, various diseases, and smoking status. Each row in the data provides relavant information about the patient.
+
+Data Source: https://www.kaggle.com/fedesoriano/stroke-prediction-dataset.\
+
+Variables included in the original data set:
+
+- id: unique identifier
+- gender: "Male", "Female" or "Other"
+- age: age of the patient
+- hypertension: 0 if the patient doesn't have hypertension, 1 if the patient has hypertension
+- heart_disease: 0 if the patient doesn't have any heart diseases, 1 if the patient has a heart disease
+- ever_married: "No" or "Yes"
+- work_type: "children", "Govt_jov", "Never_worked", "Private" or "Self-employed"
+- Residence_type: "Rural" or "Urban"
+- avg_glucose_level: average glucose level in blood
+- bmi: body mass index
+- smoking_status: "formerly smoked", "never smoked", "smokes" or "Unknown"*
+- stroke: 1 if the patient had a stroke or 0 if not
+*Note: "Unknown" in smoking_status means that the information is unavailable for this patient
+
+## Questions of Interest
+I am interested in looking at and comparing several predictive models' performance to see which model has the best accuracy. Besides that, it would also be interesting to see variables that are significant and included in the model. Because of the nature of the dataset, ROC will be used as the evaluation metric. 
+
+## Data Cleaning
+
+The dataset is essentially clean and contains 12 variables (including ID) and 5110 observations. Excluding the id, we have ten predictor variables and one binary outcome variable `stroke` (0:no stroke, 1:stroke). . Categorical variables are converted from character to factor class in order for them to be included in the model and for the purpose of analysis. I also omit the "Other" category which only includes one observation from the `gender` variable, leaving "male" and "female" as the two categories. Binary predictor variables such as `hypertension`, `heart_disease`, and `ever_married` are also recoded so that `0` means no and `1` means yes. The `work_type` variable which has 5 levels (children, govt_job, never_worked, private, and self_employed) are recoded to lower snake case. My main aim is to find out the appropriate models that have a better performance on prediction by comparing several models' performance. 
+
+# II- Exploratory analysis/visualization
+
+## Exploratory analysis 
+
+Using `summary` function, we can have a brief look at the summary statistics of the dataset. The imported dataset has 5110 observations in total. Excluding the id, we only gave ten features and one binary outcome variable-stroke (0:no stroke, 1:stroke). We found that the stroke outcome distribution is imbalanced with 4861 observations have no stroke while 249 observations have a stroke. The proportion of people who had a stroke is roughly 5%, which show a highly imbalanced outcome. I tested out oversampling method to balance this dataset. 
+
+## Missing values
+
+Firstly, I look at how many missing values are in the dataset per column.  
+
+```{r, echo = F}
+miss_scan_count(data = stroke_data, search = list("N/A", "Unknown")) %>% 
+  knitr::kable()
+```
+
+Base on the table generated above, there are 1544 "Unknown" values for `smoking_status` variable and 201 missing values for `bmi` variable. Among these 201 missing values in BMI, 40 observations have a stroke while 161 observations without stroke. We can also look at the distribution of BMI, which is right-skewed. Thus I decided to impute `bmi` values with the median.
+
+
+```{r echo = F, warning = F, message = F}
+stroke_data %>% 
+  mutate(bmi = as.numeric(bmi)) %>% 
+  ggplot(aes(x = bmi)) + geom_histogram()
+```
+
+## Imputation 
+
+I impute missing values in `bmi` using `preProcess` function.
+
+```{r }
+set.seed(2021)
+trRow_imp = createDataPartition(y = stroke_df$stroke, p = 0.7, list = F)
+train_imp = stroke_df[trRow_imp, ]
+test_imp = stroke_df[-trRow_imp, ]
+
+knnImp = preProcess(train_imp, method = "knnImpute", k = 3)
+train_imp = predict(knnImp, train_imp)
+#vis_miss(train_imp)
+train_imp = predict(knnImp, train_imp)
+#vis_miss(train_imp)
+test_imp = predict(knnImp, test_imp)
+#vis_miss(test_imp)
+```
+
+
+# III - Model building
+
+I decided to fit 4 models: penalized logistic regression, GAM, LDA and KNN. 
+
+## Penalized logistic regression
+
+```{r echo = F, warning = F, message = F}
+ctrl = trainControl(method = "cv",
+                    summaryFunction = twoClassSummary,
+                    classProbs = TRUE)
+
+glmnGrid <- expand.grid(.alpha = seq(0, 1, length = 6),
+                        .lambda = exp(seq(-8, -2, length = 20)))
+set.seed(1)
+model.glmn <- train(x = train_imp[,c(1:10)],
+                    y = train_imp$stroke,
+                    method = "glmnet",
+                    tuneGrid = glmnGrid,
+                    metric = "ROC",
+                    trControl = ctrl)
+
+plot(model.glmn, xTrans = function(x) log(x))   
+
+model.glmn$bestTune   #alpha 1, lambda 0.004195746
+
+
+glmn.pred = predict(model.glmn, newdata = test_imp, type = "prob")
+
+glmn.prob = ifelse(glmn.pred$Yes > 0.5, "No", "Yes")
+
+confusionMatrix(data = as.factor(glmn.prob),
+reference = test_imp$stroke,
+positive = "Yes")
+
+roc.glmn = roc(test_imp$stroke, glmn.pred[,2])
+
+auc.glmn = roc.glmn$auc[1]
+
+auc.glmn  #0.5611955
+
+```
+
+## LDA
+
+
+```{r echo = F, warning = F, message = F}
+ctrl <- trainControl(method = "repeatedcv", repeats = 5,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+
+set.seed(1)
+model.lda <- train(x = train_imp[,c(1:10)],
+                   y = train_imp$stroke,
+                   method = "lda",
+                   metric = "ROC",
+                   trControl = ctrl)
+
+lda.pred = predict(model.lda, newdata = test_imp, type = "prob")
+
+lda.prob = ifelse(lda.pred$Yes > 0.5,  "No", "Yes")
+
+confusionMatrix(data = as.factor(lda.prob),
+                reference = test_imp$stroke,
+                positive = "Yes")
+
+roc.lda <- roc(test_imp$stroke, lda.pred[,2])
+
+```
+
+## GAM
+
+```{r echo = F, warning = F, message = F}
+set.seed(1)
+
+model.gam <- train(x = train_imp[,c(1:10)],
+                   y = train_imp$stroke,
+                   method = "gam",
+                   metric = "ROC",
+                   trControl = ctrl)
+
+
+model.gam$finalModel
+
+plot(model.gam$finalModel)
+
+gam.pred = predict(model.gam, newdata = test_imp, type = "prob")
+
+gam.prob = ifelse(gam.pred$Yes > 0.5,  "No", "Yes")
+
+confusionMatrix(data = as.factor(gam.prob),
+                reference = test_imp$stroke,
+                positive = "Yes")
+
+roc.gam<- roc(test_imp$stroke, gam.pred[,2])
+
+```
+
+## KNN
+
+```{r echo = F, warning = F, message = F}
+set.seed(1)
+
+ctrl = trainControl(method = "cv",
+                    summaryFunction = twoClassSummary,
+                    classProbs = TRUE)
+
+model.knn = train( x = train_imp[, c(1:10)],
+                   y = train_imp$stroke,
+                   method = "knn",
+                   preProcess = c("center","scale"),
+                   tuneGrid = data.frame(k = seq(1,200,by=5)),
+                   trControl = ctrl)
+
+model.knn$finalModel
+
+knn.pred = predict(model.knn, newdata = test_imp, type = "prob")
+
+knn.prob = ifelse(knn.pred$Yes > 0.5,  "Yes", "No")
+
+confusionMatrix(data = as.factor(knn.prob),
+                reference = test_imp$stroke,
+                positive = "Yes")
+
+roc.knn = roc(test_imp$stroke, knn.pred[,2])
+
+auc.knn = roc.knn$auc[1]
+auc.knn
+
+plot(roc.knn, legacy.axes = TRUE, print.auc = TRUE)
+plot(smooth(roc.knn), col = 4, add = TRUE)
+```
+
+
+# IV - Conclusion
+
+```{r}
+auc <- c(roc.glmn$auc[1], roc.gam$auc[1], roc.lda$auc[1], roc.knn$auc[1])
+auc
+```
+
+
+After evaluating the performance of the penalized logistic regression, GAM, LDA and KNN model, it seems that the KNN model performs the best with the highest AUC. All the models have pretty high accuracy but low Kappa, which is the agreement between the predictive value and the true value. The sensitivity is also very low, this is understandable given the highly imbalanced data. We could fix this by ovesampling, however, for the purpose of our analysis, I opted to evaluate normal sampling data to avoid biased prediction results. The linear discriminant model would be more stable than the logistic regresion model if the distribution of the predictors is approximately normal, which is not the case in this example. LDA is also more popular when we have more than two response classes.
