@@ -514,12 +514,33 @@ plot(smooth(roc.gam), col = 4, add = TRUE)
 
 ### LDA
 
-```{r}
-partimat(stroke ~ avg_glucose_level + age + bmi,
-         data = stroke_df, subset = trRow, method = "lda")
 
+Using caret: No tuning grid because no tuning parameter. 
+```{r}
+ctrl <- trainControl(method = "repeatedcv", repeats = 5,
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+
+set.seed(1)
+model.lda <- train(x = train.data[,c(1:11)],
+                   y = train.data$stroke,
+                   method = "lda",
+                   metric = "ROC", #AUC
+                   trControl = ctrl)
+
+
+
+model.lda <- train(x = stroke_df[trRow,2:11],
+                   y = stroke_df$stroke[trRow],
+                   method = "lda",
+                   metric = "ROC",
+                   trControl = ctrl)
 
 ```
+
+
+
+
 
 
 
