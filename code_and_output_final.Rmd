@@ -1,0 +1,367 @@
+---
+title: "Final Project"
+author: "Linh Tran"
+date: "5/7/2021"
+output: 
+   html_document:
+     toc: true
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+
+library(caret)
+library(glmnet)
+library(mlbench)
+library(e1071)
+library(kernlab)
+library(pROC) #generate ROC curve and calculate AUC 
+library(ROCR)
+library(vip) #variable importance plot: global impact on different predictor
+library(pdp)
+library(randomForest)
+library(ranger)
+library(AppliedPredictiveModeling) # for visualization purpose
+library(corrplot)
+library(RColorBrewer)
+library(RANN)
+library(visdat)
+library(mgcv)
+library(DMwR2)
+library(lime)
+library(grid)
+library(naniar)
+library(knitr)
+library(kableExtra)
+library(rpart.plot)
+library(rpart)
+library(ROSE)
+library(iml)
+library(gridExtra)
+library(cowplot)
+
+knitr::opts_chunk$set(
+  fig.width = 12,
+  fig.height = 8,
+  out.width = "90%"
+)
+```
+
+# Import data
+
+```{r data prep}
+stroke_df = read.csv("./data/healthcare-dataset-stroke-data.csv")
+# head(stroke_df)
+
+```
+
+
+
+# EDA
+
+# EDA and Visualization
+
+Distribution of stroke:
+
+```{r}
+dataplot10 = stroke_df %>% dplyr::count(stroke) 
+dataplot1 = dataplot10 %>% mutate(ntotal=sum(dataplot10$n), perc= n/ntotal)
+plot1= ggplot(dataplot1, aes(x="", y=perc*100, fill=as.factor(stroke), group=as.factor(stroke)))+theme_bw()+
+  geom_bar(width = 1, stat = "identity") + theme_void() +
+  labs(x=" ",y=" ", fill=" ") + 
+  scale_fill_brewer(palette = "Dark2",labels = c("No stroke", "Stroke"))+
+  geom_text( y=55, label="95.13 %", size=5)+geom_text(aes(label="4.87 %"),y=2.5, x=1.3, size=4)+
+  coord_polar("y", start=0) + theme(legend.text=element_text(size=15))
+
+plot1
+```
+
+We could see that only 4.87% of the 5110 individuals in the dataset suffered a stroke. \
+
+
+```{r gender}
+#genders
+
+dataplot2=stroke_df %>% dplyr::count(stroke, gender) %>% spread(stroke, n)
+names(dataplot2)=c("gender", "neg", "pos")
+
+dataplot2 = dataplot2 %>% mutate(perc_gender=pos/(pos+neg))
+
+plot2 = ggplot(dataplot2 %>% filter(gender!="Other"), aes(x=gender,
+                        y=perc_gender*100, fill=as.factor(gender), 
+                        group=as.factor(gender))) + theme_bw()+
+  geom_bar(stat = "identity")+
+  labs(title="Gender",x="",y="Probability of stroke (%)") + scale_fill_brewer(palette = "Dark2") +
+  theme(legend.position = "none")+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+
+```
+
+Smoking status:
+
+```{r smoking status}
+
+dataplot3_1=stroke_df %>% dplyr::count(stroke, smoking_status) %>% spread(stroke, n)
+names(dataplot3_1)=c("smoking_status", "neg", "pos")
+
+dataplot3_1 = dataplot3_1 %>% mutate(perc_smoke=pos/(pos+neg))
+
+plot3 = ggplot(dataplot3_1, aes(x=smoking_status,
+                        y=perc_smoke*100, fill=as.factor(smoking_status), 
+                        group=as.factor(smoking_status))) + theme_bw()+
+  geom_bar(stat = "identity")+
+  labs(title="Smoking status",x=" ",y="Probability of stroke (%)") + scale_fill_brewer(palette = "Dark2") +
+  scale_x_discrete(labels=c("formerly smoked" = "Formerly smoked", "never smoked" = "Never smoked", "smokes"="Smokes")) +
+  theme(legend.position = "none")+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+
+
+```
+
+People who identified as former smokers have the highest probability of having a stroke (~8%), followed by smokers and then people who never smoked.
+
+
+```{r hypertension}
+# hypertension
+
+dataplot3_1a=stroke_df %>% dplyr::count(stroke, hypertension) %>% spread(stroke, n)
+names(dataplot3_1a)=c("hypertension", "neg", "pos")
+
+dataplot3_1a = dataplot3_1a %>% mutate(perc_hyp=pos/(pos+neg))
+
+plot4 =ggplot(dataplot3_1a, aes(x=as.factor(hypertension) ,
+                        y=perc_hyp*100, fill=as.factor(hypertension ), 
+                        group=as.factor(hypertension ))) + theme_bw()+
+  geom_bar(stat = "identity")+
+  labs(title="Hypertension", x=" ",y="Probability of stroke (%)", fill=" ") +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_x_discrete(breaks=c("0","1"), labels=c("0" = "No hypertension", "1" = "Hypertension")) + theme(legend.position = "none")+
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+
+
+
+```
+
+
+```{r heart disease}
+#heart disease
+dataplot3_1b=stroke_df %>% dplyr::count(stroke, heart_disease) %>% spread(stroke, n)
+names(dataplot3_1b)=c("heart_disease", "neg", "pos")
+
+dataplot3_1b = dataplot3_1b %>% mutate(perc_hd=pos/(pos+neg))
+
+plot5 = ggplot(dataplot3_1b, aes(x=as.factor(heart_disease) ,
+                         y=perc_hd*100, fill=as.factor(heart_disease ), 
+                         group=as.factor(heart_disease ))) + theme_bw()+
+  geom_bar(stat = "identity")+
+  labs(title="Heart disease",x="", y="Probability of stroke (%)", fill="Heart disease") +
+  scale_fill_brewer(palette = "Dark2") + 
+  scale_x_discrete(breaks=c("0","1"), labels=c("0" = "No HD", "1" = "HD")) + theme(legend.position = "none")+
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+
+```
+
+
+```{r marital status}
+#ever_married
+dataplot3_1c=stroke_df %>% dplyr::count(stroke, ever_married) %>% spread(stroke, n)
+names(dataplot3_1c)=c("ever_married", "neg", "pos")
+
+dataplot3_1c = dataplot3_1c %>% mutate(perc_em=pos/(pos+neg))
+
+plot6 = ggplot(dataplot3_1c, aes(x=ever_married ,
+                         y=perc_em*100, fill=as.factor(ever_married ), 
+                         group=as.factor(ever_married ))) + theme_bw()+
+  geom_bar(stat = "identity")+
+  labs(title="Ever married",x="", y="Probability of stroke (%)", fill=" ") +
+  scale_fill_brewer(palette = "Dark2") +
+  theme(legend.position = "none")+ 
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+```
+
+
+```{r worktype}
+# work type
+
+dataplot3_1d= stroke_df %>% dplyr::count(stroke, work_type) %>% spread(stroke, n)
+names(dataplot3_1d)=c("work_type", "neg", "pos")
+
+dataplot3_1d = dataplot3_1d %>% mutate(perc_wt=pos/(pos+neg))
+
+plot7=ggplot(dataplot3_1d %>% filter(work_type!="Never_worked"), aes(x=work_type ,
+                         y=perc_wt*100, fill=as.factor(work_type ), 
+                         group=as.factor(work_type ))) + theme_bw()+
+  geom_bar(stat = "identity")+
+  labs(title="Work type",x=" ",y="Probability of stroke (%)", fill=" ") +
+  scale_fill_brewer(palette = "Dark2") + 
+  scale_x_discrete(labels=c("children" = "Children", "Govt_job" = "Gov. Job")) +
+  theme(legend.position = "none")+
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+```
+
+
+```{r}
+#residence type
+
+dataplot3_1e=stroke_df %>% dplyr::count(stroke, Residence_type) %>% spread(stroke, n)
+names(dataplot3_1e)=c("Residence_type", "neg", "pos")
+
+dataplot3_1e = dataplot3_1e %>% mutate(perc_rt=pos/(pos+neg))
+
+plot8 = ggplot(dataplot3_1e, aes(x=Residence_type ,
+                         y=perc_rt*100, fill=as.factor(Residence_type ), 
+                         group=as.factor(Residence_type ))) + theme_bw()+
+  geom_bar(stat = "identity")+
+  labs(title="Residence type",x=" ", y="Probability of stroke (%)", fill=" ") +
+  scale_fill_brewer(palette = "Dark2") +
+  theme(legend.position = "none")+
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+```
+
+Categorical variables:
+
+```{r figures of distribution of categorical outcomes}
+#figures
+allplotslist_1 <- align_plots(plot2, plot3, plot4, plot5, plot6, plot7, plot8, align = "hv")
+
+
+grid_1=grid.arrange(allplotslist_1[[1]],allplotslist_1[[2]],
+                  allplotslist_1[[3]],allplotslist_1[[4]],
+                  allplotslist_1[[5]], allplotslist_1[[6]],nrow = 3)
+```
+
+
+Continuous variable:
+
+```{r continuous variable}
+#age
+plot9 = 
+  stroke_df %>% 
+  ggplot() + 
+  geom_density(aes(x=age  , group=as.factor(stroke),fill=as.factor(stroke)),
+               size=1,alpha=0.5, adjust=2)  + 
+  theme_bw()+
+  ylab("Density")+ labs(fill=' ',x="Age") +   
+  scale_fill_brewer(palette = "Dark2",labels = c("No stroke", "Stroke"))+
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+
+
+
+# bmi
+plot10 = 
+  stroke_df %>% 
+  ggplot() + 
+  geom_density(aes(x=bmi, group=as.factor(stroke),fill=as.factor(stroke)),
+               size=1,alpha=0.5, adjust=2)  + 
+  theme_bw()+
+  ylab("Density")+ labs(fill=' ',x="BMI") +   
+  scale_fill_brewer(palette = "Dark2",labels = c("No stroke", "Stroke"))+
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+
+
+
+# avg_glucose_level
+plot11 = 
+  stroke_df %>% 
+  ggplot() + 
+  geom_density(aes(x=avg_glucose_level  , group=as.factor(stroke),fill=as.factor(stroke)),
+               size=1,alpha=0.5, adjust=2)  + 
+  theme_bw()+
+  ylab("Density")+ labs(fill=' ',x="Avg. glucose level") +   
+  scale_fill_brewer(palette = "Dark2",labels = c("No stroke", "Stroke"))+
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+
+#combine plots
+plot9 + plot10 + plot11
+
+```
+
+
+**Comment**: From these plots we can see that:
+
+Formerly smokers are more prone to suffer a stroke than smokers. It is odd, but I suspect that people, in general, do not quit smoking until they really need to quit. Therefore, maybe the formerly smokers are people who quit smoking because some health conditions which may increase their risk of suffering a stroke (it's just a brainstorm).
+
+Self-employed are under higher risk of suffering a stroke than private and governament jobs.
+
+Urban residents, males and people with hypertension or heart diasease are prone to suffer a stroke. In addition, people who have been married are also more likely to suffer a stroke than the single people.
+
+
+## Change categorical variables to binary for model training
+
+```{r}
+
+stroke_df$stroke = as.factor(stroke_df$stroke)
+stroke_df$gender = factor(stroke_df$gender) %>% as.numeric()
+stroke_df$ever_married = factor(stroke_df$ever_married) %>% as.numeric()
+stroke_df$work_type = factor(stroke_df$work_type) %>% as.numeric()
+stroke_df$Residence_type = factor(stroke_df$Residence_type) %>% as.numeric()
+stroke_df$smoking_status = factor(stroke_df$smoking_status) %>% as.numeric()
+stroke_df$heart_disease = factor(stroke_df$heart_disease) %>% as.numeric()
+stroke_df$hypertension = as.numeric(factor(stroke_df$hypertension))
+stroke_df$work_type = as.factor(stroke_df$work_type) %>% as.numeric()
+stroke_df$bmi = as.numeric(stroke_df$bmi)
+
+stroke_df = stroke_df[, -1] %>% 
+    mutate(stroke = recode(stroke, 
+                           `0` = "No", 
+                           `1` = "Yes"), 
+           stroke = factor(stroke)) %>% 
+    filter(gender < 3) 
+
+
+summary(stroke_df)
+vis_miss(stroke_df)
+
+head(stroke_df)
+```
+
+
+
+## Partition the dataset
+
+```{r}
+set.seed(123)
+trRow = createDataPartition(y = stroke_df$stroke, p = 0.7, list = F)
+train.data = stroke_df[trRow, ]
+test.data = stroke_df[-trRow, ] 
+
+```
+
+## Imputation with `preProcess() `
+
+```{r}
+knnImp = preProcess(train.data, method = "knnImpute", k = 3)
+train.data = predict(knnImp, train.data)
+vis_miss(train.data)
+test.data = predict(knnImp,test.data)
+vis_miss(test.data)
+test.data$stroke
+```
+
+
+# Models
+
+
+
+
+
+# Compare models

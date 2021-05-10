@@ -1,0 +1,581 @@
+---
+title: "Final Project"
+author: "Linh Tran"
+date: "5/7/2021"
+output: 
+   html_document:
+     toc: true
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+
+library(caret)
+library(glmnet)
+library(mlbench)
+library(e1071)
+library(kernlab)
+library(pROC) #generate ROC curve and calculate AUC 
+library(ROCR)
+library(vip) #variable importance plot: global impact on different predictor
+library(pdp)
+library(randomForest)
+library(ranger)
+library(AppliedPredictiveModeling) # for visualization purpose
+library(corrplot)
+library(RColorBrewer)
+library(RANN)
+library(visdat)
+library(mgcv)
+library(DMwR2)
+library(lime)
+library(grid)
+library(naniar)
+library(knitr)
+library(kableExtra)
+library(rpart.plot)
+library(rpart)
+library(ROSE)
+library(iml)
+library(gridExtra)
+library(cowplot)
+library(MASS)
+library(klaR)
+
+knitr::opts_chunk$set(
+  fig.width = 12,
+  fig.height = 8,
+  out.width = "90%"
+)
+```
+
+# Import data
+
+```{r data prep}
+stroke_df = read.csv("./data/healthcare-dataset-stroke-data.csv")
+# head(stroke_df)
+
+```
+
+
+
+# EDA
+
+# EDA and Visualization
+
+Distribution of stroke:
+
+```{r}
+dataplot10 = stroke_df %>% dplyr::count(stroke) 
+dataplot1 = dataplot10 %>% mutate(ntotal=sum(dataplot10$n), perc= n/ntotal)
+plot1= ggplot(dataplot1, aes(x="", y=perc*100, fill=as.factor(stroke), group=as.factor(stroke)))+theme_bw()+
+  geom_bar(width = 1, stat = "identity") + theme_void() +
+  labs(x=" ",y=" ", fill=" ") + 
+  scale_fill_brewer(palette = "Dark2",labels = c("No stroke", "Stroke"))+
+  geom_text( y=55, label="95.13 %", size=5)+geom_text(aes(label="4.87 %"),y=2.5, x=1.3, size=4)+
+  coord_polar("y", start=0) + theme(legend.text=element_text(size=15))
+
+plot1
+```
+
+We could see that only 4.87% of the 5110 individuals in the dataset suffered a stroke. \
+
+
+```{r gender}
+#genders
+
+dataplot2=stroke_df %>% dplyr::count(stroke, gender) %>% spread(stroke, n)
+names(dataplot2)=c("gender", "neg", "pos")
+
+dataplot2 = dataplot2 %>% mutate(perc_gender=pos/(pos+neg))
+
+plot2 = ggplot(dataplot2 %>% filter(gender!="Other"), aes(x=gender,
+                        y=perc_gender*100, fill=as.factor(gender), 
+                        group=as.factor(gender))) + theme_bw()+
+  geom_bar(stat = "identity")+
+  labs(title="Gender",x="",y="Probability of stroke (%)") + scale_fill_brewer(palette = "Dark2") +
+  theme(legend.position = "none")+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+
+```
+
+Smoking status:
+
+```{r smoking status}
+
+dataplot3_1=stroke_df %>% dplyr::count(stroke, smoking_status) %>% spread(stroke, n)
+names(dataplot3_1)=c("smoking_status", "neg", "pos")
+
+dataplot3_1 = dataplot3_1 %>% mutate(perc_smoke=pos/(pos+neg))
+
+plot3 = ggplot(dataplot3_1, aes(x=smoking_status,
+                        y=perc_smoke*100, fill=as.factor(smoking_status), 
+                        group=as.factor(smoking_status))) + theme_bw()+
+  geom_bar(stat = "identity")+
+  labs(title="Smoking status",x=" ",y="Probability of stroke (%)") + scale_fill_brewer(palette = "Dark2") +
+  scale_x_discrete(labels=c("formerly smoked" = "Formerly smoked", "never smoked" = "Never smoked", "smokes"="Smokes")) +
+  theme(legend.position = "none")+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+
+
+```
+
+People who identified as former smokers have the highest probability of having a stroke (~8%), followed by smokers and then people who never smoked.
+
+
+```{r hypertension}
+# hypertension
+
+dataplot3_1a=stroke_df %>% dplyr::count(stroke, hypertension) %>% spread(stroke, n)
+names(dataplot3_1a)=c("hypertension", "neg", "pos")
+
+dataplot3_1a = dataplot3_1a %>% mutate(perc_hyp=pos/(pos+neg))
+
+plot4 =ggplot(dataplot3_1a, aes(x=as.factor(hypertension) ,
+                        y=perc_hyp*100, fill=as.factor(hypertension ), 
+                        group=as.factor(hypertension ))) + theme_bw()+
+  geom_bar(stat = "identity")+
+  labs(title="Hypertension", x=" ",y="Probability of stroke (%)", fill=" ") +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_x_discrete(breaks=c("0","1"), labels=c("0" = "No hypertension", "1" = "Hypertension")) + theme(legend.position = "none")+
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+
+
+
+```
+
+
+```{r heart disease}
+#heart disease
+dataplot3_1b=stroke_df %>% dplyr::count(stroke, heart_disease) %>% spread(stroke, n)
+names(dataplot3_1b)=c("heart_disease", "neg", "pos")
+
+dataplot3_1b = dataplot3_1b %>% mutate(perc_hd=pos/(pos+neg))
+
+plot5 = ggplot(dataplot3_1b, aes(x=as.factor(heart_disease) ,
+                         y=perc_hd*100, fill=as.factor(heart_disease ), 
+                         group=as.factor(heart_disease ))) + theme_bw()+
+  geom_bar(stat = "identity")+
+  labs(title="Heart disease",x="", y="Probability of stroke (%)", fill="Heart disease") +
+  scale_fill_brewer(palette = "Dark2") + 
+  scale_x_discrete(breaks=c("0","1"), labels=c("0" = "No HD", "1" = "HD")) + theme(legend.position = "none")+
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+
+```
+
+
+```{r marital status}
+#ever_married
+dataplot3_1c=stroke_df %>% dplyr::count(stroke, ever_married) %>% spread(stroke, n)
+names(dataplot3_1c)=c("ever_married", "neg", "pos")
+
+dataplot3_1c = dataplot3_1c %>% mutate(perc_em=pos/(pos+neg))
+
+plot6 = ggplot(dataplot3_1c, aes(x=ever_married ,
+                         y=perc_em*100, fill=as.factor(ever_married ), 
+                         group=as.factor(ever_married ))) + theme_bw()+
+  geom_bar(stat = "identity")+
+  labs(title="Ever married",x="", y="Probability of stroke (%)", fill=" ") +
+  scale_fill_brewer(palette = "Dark2") +
+  theme(legend.position = "none")+ 
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+```
+
+
+```{r worktype}
+# work type
+
+dataplot3_1d= stroke_df %>% dplyr::count(stroke, work_type) %>% spread(stroke, n)
+names(dataplot3_1d)=c("work_type", "neg", "pos")
+
+dataplot3_1d = dataplot3_1d %>% mutate(perc_wt=pos/(pos+neg))
+
+plot7=ggplot(dataplot3_1d %>% filter(work_type!="Never_worked"), aes(x=work_type ,
+                         y=perc_wt*100, fill=as.factor(work_type ), 
+                         group=as.factor(work_type ))) + theme_bw()+
+  geom_bar(stat = "identity")+
+  labs(title="Work type",x=" ",y="Probability of stroke (%)", fill=" ") +
+  scale_fill_brewer(palette = "Dark2") + 
+  scale_x_discrete(labels=c("children" = "Children", "Govt_job" = "Gov. Job")) +
+  theme(legend.position = "none")+
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+```
+
+
+```{r}
+#residence type
+
+dataplot3_1e=stroke_df %>% dplyr::count(stroke, Residence_type) %>% spread(stroke, n)
+names(dataplot3_1e)=c("Residence_type", "neg", "pos")
+
+dataplot3_1e = dataplot3_1e %>% mutate(perc_rt=pos/(pos+neg))
+
+plot8 = ggplot(dataplot3_1e, aes(x=Residence_type ,
+                         y=perc_rt*100, fill=as.factor(Residence_type ), 
+                         group=as.factor(Residence_type ))) + theme_bw()+
+  geom_bar(stat = "identity")+
+  labs(title="Residence type",x=" ", y="Probability of stroke (%)", fill=" ") +
+  scale_fill_brewer(palette = "Dark2") +
+  theme(legend.position = "none")+
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+```
+
+Categorical variables:
+
+```{r figures of distribution of categorical outcomes, fig.height = 20}
+#figures
+allplotslist_1 <- align_plots(plot2, plot3, plot4, plot5, plot6, plot7, plot8, align = "hv")
+
+
+grid_1=grid.arrange(allplotslist_1[[1]],allplotslist_1[[2]],
+                  allplotslist_1[[3]],allplotslist_1[[4]],
+                  allplotslist_1[[5]], allplotslist_1[[6]],nrow = 3)
+```
+
+
+Continuous variable:
+
+```{r continuous variable}
+#age
+plot9 = 
+  stroke_df %>% 
+  ggplot() + 
+  geom_density(aes(x=age  , group=as.factor(stroke),fill=as.factor(stroke)),
+               size=1,alpha=0.5, adjust=2)  + 
+  theme_bw()+
+  ylab("Density")+ labs(fill=' ',x="Age") +   
+  scale_fill_brewer(palette = "Dark2",labels = c("No stroke", "Stroke"))+
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+
+
+
+# bmi
+plot10 = 
+  stroke_df %>% 
+  ggplot() + 
+  geom_density(aes(x=bmi, group=as.factor(stroke),fill=as.factor(stroke)),
+               size=1,alpha=0.5, adjust=2)  + 
+  theme_bw()+
+  ylab("Density")+ labs(fill=' ',x="BMI") +   
+  scale_fill_brewer(palette = "Dark2",labels = c("No stroke", "Stroke"))+
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+
+
+
+# avg_glucose_level
+plot11 = 
+  stroke_df %>% 
+  ggplot() + 
+  geom_density(aes(x=avg_glucose_level  , group=as.factor(stroke),fill=as.factor(stroke)),
+               size=1,alpha=0.5, adjust=2)  + 
+  theme_bw()+
+  ylab("Density")+ labs(fill=' ',x="Avg. glucose level") +   
+  scale_fill_brewer(palette = "Dark2",labels = c("No stroke", "Stroke"))+
+  theme(text = element_text(size=13.07,colour="black"))+
+  theme(axis.text.x = element_text(colour="black",size=13.07))+
+  theme(axis.text.y = element_text(colour="black",size=13.07))
+
+#combine plots
+
+allplotslist_2 <- align_plots(plot9, plot10, plot11, align = "hv")
+
+grid_3=grid.arrange(allplotslist_2[[1]],allplotslist_2[[2]],
+                  allplotslist_2[[3]],ncol = 3)
+```
+
+
+**Comment**: From these plots we can see that:
+
+Formerly smokers are more prone to suffer a stroke than smokers. This could be due to the fact that former smokers quit after acquiring health conditions that raised their risk of having a stroke.  
+
+Self-employed are under higher risk of suffering a stroke than private and government jobs. Maybe due to higher stress and lack of insurance that are results of being self-employed?
+
+Urban residents, males and people with hypertension or heart disease are prone to suffer a stroke. In addition, people who have been married are also more likely to suffer a stroke than the single people.
+
+Age seems to be an important factor, with higher age comes higher chance of having a stroke. There are far more people who developed a stroke that have high glucose level than people with low glucose level. 
+
+## Change categorical variables to binary for model training
+
+```{r}
+
+stroke_df$stroke = as.factor(stroke_df$stroke)
+stroke_df$gender = factor(stroke_df$gender) %>% as.numeric()
+stroke_df$ever_married = factor(stroke_df$ever_married) %>% as.numeric()
+stroke_df$work_type = factor(stroke_df$work_type) %>% as.numeric()
+stroke_df$Residence_type = factor(stroke_df$Residence_type) %>% as.numeric()
+stroke_df$smoking_status = factor(stroke_df$smoking_status) %>% as.numeric()
+stroke_df$heart_disease = factor(stroke_df$heart_disease) %>% as.numeric()
+stroke_df$hypertension = as.numeric(factor(stroke_df$hypertension))
+stroke_df$work_type = as.factor(stroke_df$work_type) %>% as.numeric()
+stroke_df$bmi = as.numeric(stroke_df$bmi)
+
+stroke_df = stroke_df[, -1] %>% 
+    mutate(stroke = recode(stroke, 
+                           `0` = "No", 
+                           `1` = "Yes"), 
+           stroke = factor(stroke)) %>% 
+    filter(gender < 3) 
+
+
+summary(stroke_df)
+vis_miss(stroke_df)
+
+head(stroke_df)
+```
+
+
+
+## Partition the dataset
+
+```{r}
+set.seed(123)
+trRow = createDataPartition(y = stroke_df$stroke, p = 0.7, list = F)
+train.data = stroke_df[trRow, ]
+test.data = stroke_df[-trRow, ] 
+
+```
+
+## Imputation with `preProcess() `
+
+```{r}
+knnImp = preProcess(train.data, method = "knnImpute", k = 3)
+train.data = predict(knnImp, train.data)
+vis_miss(train.data)
+test.data = predict(knnImp,test.data)
+vis_miss(test.data)
+
+```
+
+
+
+# Models
+
+Try following models to see which algorithm fits the best because our outcome is binary and it would better to proceed with which classification performs the best. We will have accuracy and ROC/AUC as our evaluation metrics.
+
+## Logistic regression
+
+### GLM
+
+```{r, eval = FALSE}
+
+glm.fit <- glm(stroke ~ ., 
+               data = stroke_df, 
+               subset = trRow, 
+               family = binomial(link = "logit"))
+               
+summary(glm.fit)
+
+#prediction
+test.pred.prob <- predict(glm.fit, newdata = test.data,
+                           type = "response")
+                           
+
+test.pred <- rep("No", length(test.pred.prob))
+test.pred[test.pred.prob>0.5] <- "Yes"
+head(test.pred)
+
+# 2x2 table
+confusionMatrix(data = as.factor(test.pred),
+                reference = stroke_df$stroke[-trRow],
+                positive = "Yes")
+
+roc.glm <- roc(stroke_df$stroke[-trRow], test.pred.prob)
+plot(roc.glm, legacy.axes = TRUE, print.auc = TRUE)
+plot(smooth(roc.glm), col = 4, add = TRUE)
+
+# Accuracy = 0.9517 = proportion of corrected class = (TN + TP) / total , 95% CI = (0.9397, 0.9619)
+
+# NIR = 0.9517 = maximum (observed negative rate, observed positive rate). Extreme case: all observed y is 0 (neg)=> NIR = 1. Extremely unbalanced class => NIR is very high. One of the class has much larger probability (in this case negative class), then come up with a very simple classifier (assign all class label to be negative) then it makes negative prediction to all obs, but accuracy is very high still because it still can make prediction right . Accuracy is not meaningful for highly imbalanced data.
+
+# p-value = 0.5309. Kappa = 0. Null hypo: Accuracy = NIR. pvalue[Acc > NIR] = 0.5309 >>> 0.05, fail to reject that Accuracy is better than NIR. 
+
+# Kappa = measures agreement between observed labels and predictor labels. Can account for probability of agreement by chance. Here Kappa = 0 => 
+```
+
+
+```{r glm}
+# Using caret
+ctrl <- trainControl(method = "cv",
+                     summaryFunction = twoClassSummary,
+                     classProbs = TRUE)
+set.seed(1)
+model.glm <- train(x = train.data[, c(1:10)],
+                   y = train.data$stroke,
+                   method = "glm",
+                   metric = "ROC",
+                   trControl = ctrl)
+
+glm.pred = predict(model.glm, newdata = test.data, type = "prob")
+
+glm.prob = ifelse(glm.pred$Yes > 0.5,  "Yes", "No")
+
+confusionMatrix(data = as.factor(glm.prob),
+                reference = test.data$stroke,
+                positive = "Yes")
+
+roc.glm = roc(test.data$stroke, glm.pred[,2])
+
+auc.glm = roc.glm$auc[1]
+auc.glm
+
+plot(roc.glm, legacy.axes = TRUE, print.auc = TRUE)
+plot(smooth(roc.glm), col = 4, add = TRUE)
+```
+
+### KNN
+
+```{r knn, echo = F, warning = F, message = F}
+set.seed(1)
+
+ctrl = trainControl(method = "cv",
+                    summaryFunction = twoClassSummary,
+                    classProbs = TRUE)
+
+model.knn = train( x = train.data[, c(1:10)],
+                   y = train.data$stroke,
+                   method = "knn",
+                   preProcess = c("center","scale"),
+                   tuneGrid = data.frame(k = seq(1,200,by=5)),
+                   trControl = ctrl)
+
+model.knn$finalModel
+
+knn.pred = predict(model.knn, newdata = test.data, type = "prob")
+
+knn.prob = ifelse(knn.pred$Yes > 0.5,  "Yes", "No")
+
+confusionMatrix(data = as.factor(knn.prob),
+                reference = test.data$stroke,
+                positive = "Yes")
+
+roc.knn = roc(test.data$stroke, knn.pred[,2])
+
+auc.knn = roc.knn$auc[1]
+auc.knn
+
+plot(roc.knn, legacy.axes = TRUE, print.auc = TRUE)
+plot(smooth(roc.knn), col = 4, add = TRUE)
+```
+
+
+
+### GAM
+
+```{r gam}
+set.seed(1)
+
+model.gam <- train(x = train.data[,c(1:11)],
+                   y = train.data$stroke,
+                   method = "gam",
+                   metric = "ROC",
+                   trControl = ctrl)
+
+
+model.gam$finalModel
+
+
+gam.pred = predict(model.gam, newdata = test.data, type = "prob")
+
+gam.prob = ifelse(gam.pred$Yes > 0.5,  "Yes", "No")
+
+confusionMatrix(data = as.factor(gam.prob),
+                reference = test.data$stroke,
+                positive = "Yes")
+
+roc.gam = roc(test.data$stroke, gam.pred[,2])
+
+auc.gam = roc.gam$auc[1]
+auc.gam
+
+plot(roc.gam, legacy.axes = TRUE, print.auc = TRUE)
+plot(smooth(roc.gam), col = 4, add = TRUE)
+
+
+```
+
+
+
+### LDA
+
+```{r}
+partimat(stroke ~ avg_glucose_level + age + bmi,
+         data = stroke_df, subset = trRow, method = "lda")
+
+
+```
+
+
+
+### QDA
+
+
+### Naive Bayes
+
+
+
+
+## Classification trees
+
+Logistic regression assumes that the data is linearly separable in space but decision trees do not. Decision trees also handle skewed data better. 
+
+
+
+### Compare models
+
+
+```{r comparing using cv}
+# based on cv
+
+res <- resamples(list(GLM = model.glm,  
+                      GAM = model.gam,
+                      KNN = model.knn))
+summary(res)
+
+bwplot(res, metric = c("ROC", "AUC"))
+
+# GLM and GAM perform better compared to KNN. KNN usually requires a larger dataset to perform as good as model with symmeratric structure. 
+```
+
+
+```{r auc}
+#1st column is probability of negative, 2nd is positive
+glm.pred <- predict(model.glm, newdata = test.data, type = "prob")[,2]
+knn.pred <- predict(model.knn, newdata = test.data, type = "prob")[,2]
+gam.pred <- predict(model.gam, newdata = test.data, type = "prob")[,2]
+
+
+roc.glm <- roc(test.data$stroke, glm.pred)
+roc.knn <- roc(test.data$stroke, knn.pred)
+roc.gam <- roc(test.data$stroke, gam.pred)
+
+
+auc <- c(roc.glm$auc[1], roc.knn$auc[1],
+         roc.gam$auc[1])
+
+plot(roc.glm, legacy.axes = TRUE)
+plot(roc.knn, col = 2, add = TRUE)
+plot(roc.gam, col = 3, add = TRUE)
+
+
+modelNames <- c("glm","knn","gam")
+legend("bottomright", legend = paste0(modelNames, ": ", round(auc,3)),
+       col = 1:3, lwd = 2)
+```
+
