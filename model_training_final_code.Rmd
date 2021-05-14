@@ -2,9 +2,7 @@
 title: "Final Project"
 author: "Linh Tran"
 date: "5/7/2021"
-output: 
-   html_document:
-     toc: true
+output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
@@ -36,12 +34,19 @@ library(knitr)
 library(kableExtra)
 library(rpart.plot)
 library(rpart)
+library(party)
+library(partykit)
+library(plotmo)
 library(ROSE)
 library(iml)
 library(gridExtra)
 library(cowplot)
 library(MASS)
 library(klaR)
+
+library(gbm)
+library(imbalance)
+
 
 knitr::opts_chunk$set(
   fig.width = 12,
@@ -56,11 +61,13 @@ knitr::opts_chunk$set(
 stroke_df = read.csv("./data/healthcare-dataset-stroke-data.csv")
 # head(stroke_df)
 
+head(stroke_df)
+
 ```
 
 
 
-# EDA
+
 
 # EDA and Visualization
 
@@ -356,122 +363,114 @@ test.data = stroke_df[-trRow, ]
 
 ```{r}
 knnImp = preProcess(train.data, method = "knnImpute", k = 3)
-train.data = predict(knnImp, train.data)
-vis_miss(train.data)
-test.data = predict(knnImp,test.data)
-vis_miss(test.data)
+train.data.imp = predict(knnImp, train.data)
+vis_miss(train.data.imp)
+test.data.imp = predict(knnImp,test.data)
+vis_miss(test.data.imp)
 
 ```
 
+Try following models to see which algorithm fits the best because our outcome is binary and it would better to proceed with which classification performs the best. We will have accuracy and ROC/AUC as our evaluation metrics.
+
+In most cases I used grid search with repeated cross-validation (10 folds repeated 3 times) to tune the parameters. 
+
+```{r}
+ctrl <- trainControl(
+  method = "repeatedcv", 
+  number = 10,repeats=3,
+  summaryFunction = twoClassSummary,
+  classProbs = TRUE)
+```
 
 
 # Models
 
 Try following models to see which algorithm fits the best because our outcome is binary and it would better to proceed with which classification performs the best. We will have accuracy and ROC/AUC as our evaluation metrics.
 
+In most cases I used grid search with repeated cross-validation (10 folds repeated 3 times) to tune the parameters. 
+
 ## Logistic regression
 
 ### GLM
 
-```{r, eval = FALSE}
-
-glm.fit <- glm(stroke ~ ., 
-               data = stroke_df, 
-               subset = trRow, 
-               family = binomial(link = "logit"))
-               
-summary(glm.fit)
-
-#prediction
-test.pred.prob <- predict(glm.fit, newdata = test.data,
-                           type = "response")
-                           
-
-test.pred <- rep("No", length(test.pred.prob))
-test.pred[test.pred.prob>0.5] <- "Yes"
-head(test.pred)
-
-# 2x2 table
-confusionMatrix(data = as.factor(test.pred),
-                reference = stroke_df$stroke[-trRow],
-                positive = "Yes")
-
-roc.glm <- roc(stroke_df$stroke[-trRow], test.pred.prob)
-plot(roc.glm, legacy.axes = TRUE, print.auc = TRUE)
-plot(smooth(roc.glm), col = 4, add = TRUE)
-
-# Accuracy = 0.9517 = proportion of corrected class = (TN + TP) / total , 95% CI = (0.9397, 0.9619)
-
-# NIR = 0.9517 = maximum (observed negative rate, observed positive rate). Extreme case: all observed y is 0 (neg)=> NIR = 1. Extremely unbalanced class => NIR is very high. One of the class has much larger probability (in this case negative class), then come up with a very simple classifier (assign all class label to be negative) then it makes negative prediction to all obs, but accuracy is very high still because it still can make prediction right . Accuracy is not meaningful for highly imbalanced data.
-
-# p-value = 0.5309. Kappa = 0. Null hypo: Accuracy = NIR. pvalue[Acc > NIR] = 0.5309 >>> 0.05, fail to reject that Accuracy is better than NIR. 
-
-# Kappa = measures agreement between observed labels and predictor labels. Can account for probability of agreement by chance. Here Kappa = 0 => 
-```
-
-
 ```{r glm}
 # Using caret
-ctrl <- trainControl(method = "cv",
-                     summaryFunction = twoClassSummary,
-                     classProbs = TRUE)
+
 set.seed(1)
-model.glm <- train(x = train.data[, c(1:10)],
-                   y = train.data$stroke,
+model.glm <- train(x = train.data.imp[, c(1:10)],
+                   y = train.data.imp$stroke,
                    method = "glm",
                    metric = "ROC",
                    trControl = ctrl)
 
-glm.pred = predict(model.glm, newdata = test.data, type = "prob")
+summary(model.glm)
+
+glm.pred = predict(model.glm, newdata = test.data.imp, type = "prob")
 
 glm.prob = ifelse(glm.pred$Yes > 0.5,  "Yes", "No")
 
 confusionMatrix(data = as.factor(glm.prob),
-                reference = test.data$stroke,
+                reference = test.data.imp$stroke,
                 positive = "Yes")
 
-roc.glm = roc(test.data$stroke, glm.pred[,2])
-
-auc.glm = roc.glm$auc[1]
-auc.glm
-
-plot(roc.glm, legacy.axes = TRUE, print.auc = TRUE)
-plot(smooth(roc.glm), col = 4, add = TRUE)
 ```
+
+
+### Penalized logistic regression
+
+```{r}
+
+tune_grid = expand.grid(
+  alpha=0:1,
+  lambda = seq(0.0001, 1, length = 20)
+)
+
+
+model.logistic <- train(
+  x = train.data.imp[, c(1:10)],
+  y = train.data.imp$stroke,
+  method = "glmnet",
+  metric = "ROC",
+  trControl = ctrl,
+  tuneGrid = tune_grid)
+
+log.pred = predict(model.logistic, newdata = test.data.imp, type = "prob")
+
+log.prob = ifelse(log.pred$Yes > 0.5,  "Yes", "No")
+
+confusionMatrix(data = as.factor(log.prob),
+                reference = test.data.imp$stroke,
+                positive = "Yes")
+
+```
+
+
+
 
 ### KNN
 
 ```{r knn, echo = F, warning = F, message = F}
 set.seed(1)
 
-ctrl = trainControl(method = "cv",
-                    summaryFunction = twoClassSummary,
-                    classProbs = TRUE)
 
-model.knn = train( x = train.data[, c(1:10)],
-                   y = train.data$stroke,
+model.knn = train( x = train.data.imp[, c(1:10)],
+                   y = train.data.imp$stroke,
                    method = "knn",
                    preProcess = c("center","scale"),
                    tuneGrid = data.frame(k = seq(1,200,by=5)),
                    trControl = ctrl)
 
+
 model.knn$finalModel
 
-knn.pred = predict(model.knn, newdata = test.data, type = "prob")
+knn.pred = predict(model.knn, newdata = test.data.imp, type = "prob")
 
 knn.prob = ifelse(knn.pred$Yes > 0.5,  "Yes", "No")
 
 confusionMatrix(data = as.factor(knn.prob),
-                reference = test.data$stroke,
+                reference = test.data.imp$stroke,
                 positive = "Yes")
 
-roc.knn = roc(test.data$stroke, knn.pred[,2])
-
-auc.knn = roc.knn$auc[1]
-auc.knn
-
-plot(roc.knn, legacy.axes = TRUE, print.auc = TRUE)
-plot(smooth(roc.knn), col = 4, add = TRUE)
 ```
 
 
@@ -481,74 +480,59 @@ plot(smooth(roc.knn), col = 4, add = TRUE)
 ```{r gam}
 set.seed(1)
 
-model.gam <- train(x = train.data[,c(1:11)],
-                   y = train.data$stroke,
+model.gam <- train(x = train.data.imp[,c(1:10)],
+                   y = train.data.imp$stroke,
                    method = "gam",
                    metric = "ROC",
                    trControl = ctrl)
 
+summary(model.gam)
 
 model.gam$finalModel
 
 
-gam.pred = predict(model.gam, newdata = test.data, type = "prob")
+gam.pred = predict(model.gam, newdata = test.data.imp, type = "prob")
 
 gam.prob = ifelse(gam.pred$Yes > 0.5,  "Yes", "No")
 
 confusionMatrix(data = as.factor(gam.prob),
-                reference = test.data$stroke,
+                reference = test.data.imp$stroke,
                 positive = "Yes")
-
-roc.gam = roc(test.data$stroke, gam.pred[,2])
-
-auc.gam = roc.gam$auc[1]
-auc.gam
-
-plot(roc.gam, legacy.axes = TRUE, print.auc = TRUE)
-plot(smooth(roc.gam), col = 4, add = TRUE)
 
 
 ```
 
 
+## Linear Discriminant Analysis (LDA)
 
-### LDA
-
-
-Using caret: No tuning grid because no tuning parameter. 
-```{r}
-ctrl <- trainControl(method = "repeatedcv", repeats = 5,
-                     summaryFunction = twoClassSummary,
-                     classProbs = TRUE)
-
+```{r lda}
 set.seed(1)
-model.lda <- train(x = train.data[,c(1:11)],
-                   y = train.data$stroke,
-                   method = "lda",
-                   metric = "ROC", #AUC
-                   trControl = ctrl)
-
-
-
-model.lda <- train(x = stroke_df[trRow,2:11],
-                   y = stroke_df$stroke[trRow],
+model.lda <- train(x = train.data.imp[,c(1:10)],
+                   y = train.data.imp$stroke,
                    method = "lda",
                    metric = "ROC",
                    trControl = ctrl)
 
+lda.pred = predict(model.lda, newdata = test.data.imp, type = "prob")
+
+lda.prob = ifelse(lda.pred$Yes > 0.5,  "Yes", "No")
+
+
+roc.lda <- roc(test.data.imp$stroke, lda.pred[,2])
+
+auc.lda = roc.lda$auc[1]
+auc.lda
+
+plot(roc.lda, legacy.axes = TRUE, print.auc = TRUE)
+plot(smooth(roc.lda), col = 4, add = TRUE)
+     
+confusionMatrix(data = as.factor(lda.prob),
+                reference = test.data.imp$stroke,
+                positive = "Yes")
+
+
+
 ```
-
-
-
-
-
-
-
-### QDA
-
-
-### Naive Bayes
-
 
 
 
@@ -557,46 +541,300 @@ model.lda <- train(x = stroke_df[trRow,2:11],
 Logistic regression assumes that the data is linearly separable in space but decision trees do not. Decision trees also handle skewed data better. 
 
 
+### Conditional Inference tree
 
-### Compare models
+```{r CIT}
+set.seed(1)
+
+#ctree.fit <- train(stroke ~ . ,  stroke_df,  subset = trRow,method = "ctree",metric = "ROC",trControl = ctrl,na.action = na.exclude)
+
+#plot(ctree.fit$finalModel)
+
+#ctree.pred <- predict(ctree.fit, newdata = stroke_df[-trRow,],type = "prob")[,1]
+
+#roc.ctree <- roc(stroke_df$stroke[-trRow], ctree.pred)
+
+#roc.ctree$auc[1]
+
+#plot(roc.ctree, legacy.axes = TRUE, print.auc = TRUE)
+
+
+
+model.ctree <- train(x = train.data.imp[,c(1:10)],
+                   y = train.data.imp$stroke,
+                   method = "ctree",
+                   tuneGrid = data.frame(mincriterion = 1-exp(seq(-2, -1, length = 50))),
+                   metric = "ROC",
+                   trControl = ctrl)
+
+model.ctree$finalModel #conditional inferece tree with 8 terminal nodes
+
+plot(model.ctree$finalModel)
+
+
+
+
+```
+
+### CART
+
+```{r rpart}
+set.seed(1)
+rpart.fit <- train(x = train.data.imp[,c(1:10)],
+                   y = train.data.imp$stroke,
+                   method = "rpart",
+                   tuneGrid = data.frame(cp = exp(seq(-6,-3, len = 50))),
+                   trControl = ctrl,
+                   metric = "ROC")
+
+rpart.fit
+ggplot(rpart.fit, highlight = TRUE)
+rpart.plot(rpart.fit$finalModel)
+
+```
+
+
+```{r}
+summary(resamples(list(rpart.fit, model.ctree)))
+
+#ctree is a better fit
+```
+
+### Bagging and Random Forests
+
+```{r bagging and rf}
+set.seed(1)
+
+bagging <- randomForest(stroke ~ . , 
+                        stroke_df[trRow,],
+                        mtry = 8,
+                        na.action = na.exclude)
+
+set.seed(1)
+rf <- randomForest(stroke ~ . , 
+                   stroke_df[trRow,],
+                   mtry = 3,
+                   na.action = na.exclude)
+
+
+
+varImpPlot(rf)
+```
+
+### Random forests using `caret`
+
+```{r rf using caret}
+
+rf.grid <- expand.grid(mtry = 1:8,
+                       splitrule = "gini",
+                       min.node.size = seq(from = 2, to = 10, by = 2))
+set.seed(1)
+
+rf.fit <- train(x = train.data.imp[,c(1:10)],
+                   y = train.data.imp$stroke,
+                method = "ranger",
+                tuneGrid = rf.grid,
+                metric = "ROC",
+                trControl = ctrl)
+
+
+#rf.pred = predict(rf.fit, newdata = test.data, type = "prob")
+
+#rf.prob = ifelse(rf.pred$Yes > 0.5,  "Yes", "No")
+
+
+
+#rf.prob = recode_factor(rf.prob, `0` = "No", `1` = "Yes")
+
+#confusionMatrix(data = as.factor(rf.pred),reference = stroke_df$stroke[-trRow], positive = "Yes")
+
+```
+
+
+
+## SVM
+Since we are considering the two-class classification problem in our context of question, SVM may serve as a good solution.
+
+- What predictor variables did you include?
+
+From the previous model, I decide to pick up features with variable importance greater than 10 : avg_glucose_level, age, bmi, smoking status and working type.
+
+First of all, we will still process the model with all variables included in the model and plot the variable importance to see which variables should we keep in the model.
+
+- What technique did you use? What assumptions, if any, are being made by using this technique?
+
+The only assumptions of support vector machines are independent and identically distributed data. SVM is quite tolerant of input data, especially the soft-margin version.
+
+- If there were tuning parameters, how did you pick their values?
+
+C also known as cost parameter is the tuning parameter in the SVM algorithm. I will used the exponentiated sequence of number with cross-validation to see if there's any best parameters for this model. Plotting out the tuning will also help us have a better vizualization on deciding hyperparameters. 
+
+### Linear SVM
+
+
+### Radial SVM
+
+
+```{r linear svm, eval = FALSE}
+
+trainSmoted <- SMOTE(stroke ~ ., train.data)
+
+
+
+trainSmoted$stroke = factor(trainSmoted$stroke, levels = c("No", "Yes"))
+train.data$stroke = factor(train.data$stroke, levels = c("No", "Yes"))
+test.data$stroke = factor(test.data$stroke, levels = c("No", "Yes"))
+
+set.seed(123)
+
+svm.linear = tune.svm(stroke ~ ., 
+                      data = trainSmoted, 
+                      kernel = "linear", 
+                      cost = exp(seq(-5,2,len=50)),
+                      scale = TRUE)
+
+
+
+summary(svm.linear)
+plot(svm.linear)
+
+svm.linear$best.parameters
+
+best.linear = svm.linear$best.model 
+summary(best.linear)
+
+
+pred_train_lsvm = predict(best.linear, newdata = train.data) 
+
+pred_train_lsvm = recode_factor(pred_train_lsvm, `0` = "No", `1` = "Yes")
+
+confusionMatrix(data = pred_train_lsvm, reference = train.data$stroke , positive = "Yes")
+
+pred_test_lsvm = predict(best.linear, newdata = test.data)
+confusionMatrix(data = pred_test_lsvm, reference = test.data$stroke, positive = "Yes")
+
+pred_test_lsvm_numeric = as.numeric(pred_test_lsvm) -1
+roc.lsvm = roc(test.data$stroke, pred_test_lsvm_numeric)
+
+auc.lsvm = roc.lsvm$auc[1]
+auc.lsvm
+plot(roc.lsvm, legacy.axes = TRUE, print.auc = TRUE) 
+# plot(smooth(roc.lsvm), col = 4, add = TRUE)
+```
+
+### Radial kernel (RBF)
+
+
+```{r radial SVM, eval = FALSE}
+set.seed(123)
+
+svm.rbf = tune.svm(stroke ~ ., 
+                      data = trainSmoted, 
+                      kernel = "radial", 
+                      cost = exp(seq(-4,1,len=10)),
+                      gamma = exp(seq(-5,3,len = 10)))
+
+
+
+summary(svm.rbf)
+plot(svm.rbf)
+
+svm.rbf$best.parameters
+
+best.rbf = svm.rbf$best.model 
+summary(best.rbf)
+
+pred_train_rsvm = predict(best.rbf, newdata = train.data) 
+confusionMatrix(data = pred_train_rsvm, reference = train.data$stroke, positive = "Yes")
+
+pred_test_rsvm = predict(best.rbf, newdata = test.data) 
+confusionMatrix(data = pred_test_rsvm, reference = test.data$stroke, positive = "Yes")
+
+pred_test_rsvm_numeric = as.numeric(pred_test_rsvm) -1
+roc.rsvm = roc(test.data$stroke, pred_test_rsvm_numeric)
+
+auc.rsvm = roc.rsvm$auc[1]
+auc.rsvm
+plot(roc.rsvm, legacy.axes = TRUE, print.auc = TRUE) 
+# plot(smooth(roc.rsvm), col = 4, add = TRUE)
+```
+
+
+
+
+
+## Compare models
 
 
 ```{r comparing using cv}
 # based on cv
 
-res <- resamples(list(GLM = model.glm,  
-                      GAM = model.gam,
-                      KNN = model.knn))
-summary(res)
+res <- resamples(list(glm = model.glm,  
+                      gam = model.gam,
+                      knn = model.knn,
+                      lda = model.lda,
+                      cart = rpart.fit, 
+                      cit = model.ctree,
+                      rf = rf.fit))
+summary(res) 
 
-bwplot(res, metric = c("ROC", "AUC"))
+bwplot(res, metric = "ROC")
 
 # GLM and GAM perform better compared to KNN. KNN usually requires a larger dataset to perform as good as model with symmeratric structure. 
+
+
 ```
 
 
 ```{r auc}
 #1st column is probability of negative, 2nd is positive
-glm.pred <- predict(model.glm, newdata = test.data, type = "prob")[,2]
-knn.pred <- predict(model.knn, newdata = test.data, type = "prob")[,2]
-gam.pred <- predict(model.gam, newdata = test.data, type = "prob")[,2]
+glm.pred <- predict(model.glm, newdata = test.data.imp, type = "prob")[,2]
+gam.pred <- predict(model.gam, newdata = test.data.imp, type = "prob")[,2]
+lda.pred <- predict(model.lda, newdata = test.data.imp, type = "prob")[,2]
+knn.pred <- predict(model.knn, newdata = test.data.imp, type = "prob")[,2]
+rf.pred <- predict(rf.fit, newdata = test.data.imp, type = "prob")[,2]
+cit.pred <- predict(model.ctree, newdata = test.data.imp, type = "prob")[,2]
+cart.pred <- predict(rpart.fit, newdata = test.data.imp, type = "prob")[,2]
+
+roc.glm <- roc(test.data.imp$stroke, glm.pred)
+roc.gam <- roc(test.data.imp$stroke, gam.pred)
+roc.lda <- roc(test.data.imp$stroke, lda.pred)
+roc.knn <- roc(test.data.imp$stroke, knn.pred)
+roc.rf <- roc(test.data.imp$stroke, rf.pred)
+roc.cit <- roc(test.data.imp$stroke, cit.pred)
+roc.cart <- roc(test.data.imp$stroke, cart.pred)
 
 
-roc.glm <- roc(test.data$stroke, glm.pred)
-roc.knn <- roc(test.data$stroke, knn.pred)
-roc.gam <- roc(test.data$stroke, gam.pred)
-
-
-auc <- c(roc.glm$auc[1], roc.knn$auc[1],
-         roc.gam$auc[1])
+auc <- c(roc.glm$auc[1], roc.gam$auc[1],
+         roc.lda$auc[1], roc.knn$auc[1],
+         roc.rf$auc[1], roc.cit$auc[1],
+         roc.cart$auc[1])
 
 plot(roc.glm, legacy.axes = TRUE)
-plot(roc.knn, col = 2, add = TRUE)
-plot(roc.gam, col = 3, add = TRUE)
+plot(roc.gam, col = 2, add = TRUE)
+plot(roc.lda, col = 3, add = TRUE)
+plot(roc.knn, col = 4, add = TRUE)
+plot(roc.rf, col = 5, add = TRUE)
+plot(roc.cit, col = 6, add = TRUE)
+plot(roc.cart, col = 7, add = TRUE)
 
-
-modelNames <- c("glm","knn","gam")
+modelNames <- c("glm", "gam","lda", "knn","rf", "cit", "cart")
 legend("bottomright", legend = paste0(modelNames, ": ", round(auc,3)),
-       col = 1:3, lwd = 2)
+       col = 1:7, lwd = 2)
 ```
+
+
+# Conclusion
+We could fix this by ovesampling, however,for the purpose of our analysis, I opted to evaluate normal sampling data to avoid biased prediction results.The linear discriminant model would be more stable than the logistic regresion model if the distribution of the predictors is approximately normal, which is not the case in this example. LDA is also more popular when we have more than two response classes.
+
+# Variable Importance
+
+```{r}
+varImp(model.glm)
+
+ 
+
+```
+
+
 
